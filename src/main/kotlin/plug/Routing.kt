@@ -1,0 +1,41 @@
+package com.example.booking.plugins
+
+import com.example.booking.models.UserRegistration
+import com.example.database.Users
+import io.ktor.http.*
+import io.ktor.server.application.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.transactions.transaction
+
+fun Application.configureRouting() {
+    routing {
+        get("/") {
+            call.respondText("Hello World!")
+        }
+
+        post("/register") {
+            try {
+                val userRegistration = call.receive<UserRegistration>()
+                println("Received registration data: $userRegistration")
+
+                transaction {
+                    Users.insert {
+                        it[fullName] = userRegistration.fullName
+                        it[phoneNumber] = userRegistration.phoneNumber
+                        it[password] = userRegistration.password
+                    }
+                }
+                call.respond(HttpStatusCode.Created, "User registered successfully")
+            } catch (e: ContentTransformationException) {
+                println("Failed to parse JSON: ${e.message}")
+                call.respond(HttpStatusCode.BadRequest, "Invalid JSON format")
+            } catch (e: Exception) {
+                println("Error: ${e.stackTraceToString()}") // Full stack trace
+                call.respond(HttpStatusCode.InternalServerError, "Error: ${e.localizedMessage}")
+            }
+        }
+    }
+}
