@@ -8,3 +8,8 @@ data class UserRegistration(
     val phoneNumber: String,
     val password: String
 )
+
+@Serializable
+data class RegistrationResponse(
+    val userId: Int
+)

@@ -4,7 +4,7 @@ import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 
 object Users : Table() {
-    val id = integer("id").autoIncrement()
+    val id = integer("id_user").autoIncrement()
     val fullName = varchar("fio", 100)
     val phoneNumber = varchar("user_phone", 20)
     val password = varchar("password", 255)
