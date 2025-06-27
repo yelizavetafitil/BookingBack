@@ -12,10 +12,21 @@ object Users : Table() {
     override val primaryKey = PrimaryKey(id)
 }
 
+object Companies : Table() {
+    val idCompany = integer("id_company").autoIncrement()
+    val enterpriseName = varchar("company_name", 100)
+    val city = varchar("city", 50)
+    val address = varchar("address", 200)
+    val enterprisePhoneNumber = varchar("company_phone", 20)
+
+    override val primaryKey = PrimaryKey(idCompany)
+}
+
 fun initDatabase() {
     Database.connect("jdbc:mysql://localhost:3306/booking",
         driver = "com.mysql.cj.jdbc.Driver", user = "pma", password = "your_password")
     transaction {
         SchemaUtils.create(Users)
+        SchemaUtils.create(Companies)
     }
 }
