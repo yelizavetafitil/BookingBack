@@ -13,3 +13,10 @@ data class UserRegistration(
 data class RegistrationResponse(
     val userId: Int
 )
+
+@Serializable
+data class LoginRequest(
+    val fullName: String,
+    val phoneNumber: String,
+    val password: String
+)

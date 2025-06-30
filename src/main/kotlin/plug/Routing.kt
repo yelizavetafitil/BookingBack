@@ -1,16 +1,15 @@
 package com.example.booking.plugins
 
-import com.example.booking.models.EnterpriseRegistration
-import com.example.booking.models.EnterpriseRegistrationResponse
-import com.example.booking.models.RegistrationResponse
-import com.example.booking.models.UserRegistration
+import com.example.booking.models.*
 import com.example.database.Companies
+import com.example.database.Projects
 import com.example.database.Users
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
@@ -167,8 +166,18 @@ fun Application.configureRouting() {
                     } get Companies.idCompany
                 }
 
-                val response = EnterpriseRegistrationResponse(idCompany)
-                call.respond(HttpStatusCode.Created, response)
+                transaction {
+                    Projects.insert {
+                        it[access] = "Админ"
+                        it[id_user] = enterpriseRegistration.userId
+                        it[id_company] = idCompany
+                    }
+                }
+
+                call.respond(
+                    HttpStatusCode.Created,
+                    EnterpriseRegistrationResponse(idCompany)
+                )
             } catch (e: ContentTransformationException) {
                 call.respond(HttpStatusCode.BadRequest, "Неверный формат данных")
             } catch (e: Exception) {
@@ -191,6 +200,86 @@ fun Application.configureRouting() {
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
             }
+        }
+
+        post("/login") {
+            try {
+                val loginRequest = call.receive<LoginRequest>()
+                println("Login attempt for: ${loginRequest.phoneNumber}")
+
+                when {
+                    loginRequest.fullName.isBlank() -> {
+                        call.respond(HttpStatusCode.BadRequest, "ФИО обязательно для заполнения")
+                        return@post
+                    }
+                    loginRequest.phoneNumber.isBlank() -> {
+                        call.respond(HttpStatusCode.BadRequest, "Номер телефона обязателен")
+                        return@post
+                    }
+                    !loginRequest.phoneNumber.matches(Regex("^\\+?[0-9]{10,15}$")) -> {
+                        call.respond(HttpStatusCode.BadRequest, "Неверный формат номера телефона")
+                        return@post
+                    }
+                    loginRequest.password.isBlank() -> {
+                        call.respond(HttpStatusCode.BadRequest, "Пароль обязателен")
+                        return@post
+                    }
+                }
+
+                val (userId, storedHash) = transaction {
+                    Users.select {
+                        (Users.phoneNumber eq loginRequest.phoneNumber) and
+                                (Users.fullName eq loginRequest.fullName)
+                    }.map {
+                        it[Users.id] to it[Users.password]
+                    }.singleOrNull() ?: (null to null)
+                }
+
+                if (userId == null) {
+                    call.respond(HttpStatusCode.BadRequest, "Пользователь не найден")
+                    return@post
+                }
+
+                if (!BCrypt.checkpw(loginRequest.password, storedHash)) {
+                    call.respond(HttpStatusCode.BadRequest, "Неверный пароль")
+                    return@post
+                }
+
+                println(userId.toString())
+
+                val response = RegistrationResponse(userId)
+                call.respond(HttpStatusCode.OK, response)
+
+            } catch (e: ContentTransformationException) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный формат данных")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Ошибка сервера: ${e.message}")
+            }
+        }
+
+        get("/userEnterprises/{userId}") {
+            val userId = call.parameters["userId"]?.toIntOrNull()
+                ?: throw IllegalArgumentException("Invalid user ID")
+
+            val enterprises = transaction {
+                (Projects innerJoin Companies)
+                    .slice(
+                        Companies.idCompany,
+                        Companies.enterpriseName,
+                        Projects.access
+                    )
+                    .select { Projects.id_user eq userId }
+                    .map {
+                        EnterpriseData(
+                            enterpriseId = it[Companies.idCompany],
+                            enterpriseName = it[Companies.enterpriseName],
+                            userId = userId,
+                            access = it[Projects.access],
+                        )
+                    }
+            }
+
+            call.respond(enterprises)
         }
     }
 }
