@@ -12,6 +12,14 @@ data class EnterpriseRegistration(
 )
 
 @Serializable
+data class Enterprise(
+    val enterpriseName: String,
+    val city: String,
+    val address: String,
+    val enterprisePhoneNumber: String
+)
+
+@Serializable
 data class EnterpriseRegistrationResponse(
     val enterpriseId: Int
 )

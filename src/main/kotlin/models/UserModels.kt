@@ -20,3 +20,18 @@ data class LoginRequest(
     val phoneNumber: String,
     val password: String
 )
+
+@Serializable
+data class UserData(
+    val fullName: String,
+    val phoneNumber: String,
+    val password: String
+)
+
+@Serializable
+data class User(
+    val id: Int,
+    val fullName: String,
+    val phone: String,
+    val password: String
+)

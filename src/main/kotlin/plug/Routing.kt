@@ -6,13 +6,12 @@ import com.example.database.Projects
 import com.example.database.Users
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.plugins.*
 import io.ktor.server.request.*
+import io.ktor.server.request.ContentTransformationException
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.select
+import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
 
@@ -280,6 +279,94 @@ fun Application.configureRouting() {
             }
 
             call.respond(enterprises)
+        }
+
+        get("/users/{userId}") {
+            val userId = call.parameters["userId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid user ID")
+
+            val userData = transaction {
+                Users.select { Users.id eq userId }
+                    .singleOrNull()
+                    ?.let {
+                        UserData(
+                            fullName = it[Users.fullName],
+                            phoneNumber = it[Users.phoneNumber],
+                            password = ""
+                        )
+                    }
+            } ?: throw NotFoundException("User not found")
+
+            call.respond(userData)
+        }
+
+        put("/userUpdate/{userId}") {
+            val userId = call.parameters["userId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid user ID")
+
+            val updateData = call.receive<UserData>()
+
+            transaction {
+                Users.update({ Users.id eq userId }) {
+                    it[fullName] = updateData.fullName
+                }
+            }
+
+            call.respond(HttpStatusCode.OK)
+        }
+
+        get("/enterprise/{enterpriseId}") {
+            val enterpriseId = call.parameters["enterpriseId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = transaction {
+                Companies.select { Companies.idCompany eq enterpriseId }
+                    .singleOrNull()
+                    ?.let {
+                        Enterprise(
+                            enterpriseName = it[Companies.enterpriseName],
+                            city = it[Companies.city],
+                            address = it[Companies.address],
+                            enterprisePhoneNumber = it[Companies.enterprisePhoneNumber]
+                        )
+                    }
+            } ?: throw NotFoundException("Companies not found")
+
+            call.respond(Data)
+        }
+
+        put("/enterpriseUpdate/{enterpriseId}") {
+            val enterpriseId = call.parameters["enterpriseId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = call.receive<Enterprise>()
+
+            transaction {
+                Companies.update({ Companies.idCompany eq enterpriseId }) {
+                    it[enterpriseName] = Data.enterpriseName
+                    it[city] = Data.city
+                    it[address] = Data.address
+                }
+            }
+
+            call.respond(HttpStatusCode.OK)
+        }
+
+        delete("/enterpriseDelete/{enterpriseId}") {
+            val id = call.parameters["enterpriseId"]?.toIntOrNull()
+
+            if (id == null) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный ID")
+                return@delete
+            }
+
+            try {
+                transaction {
+                    Companies.deleteWhere { Companies.idCompany eq id }
+                }
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+            }
         }
     }
 }
