@@ -1,9 +1,10 @@
 package com.example.booking.plugins
 
 import com.example.booking.models.*
-import com.example.database.Companies
-import com.example.database.Projects
-import com.example.database.Users
+import com.example.database.*
+import com.example.models.Service
+import com.example.models.ServiceData
+import com.example.models.ServiceEdit
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.*
@@ -12,6 +13,7 @@ import io.ktor.server.request.ContentTransformationException
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
 
@@ -368,5 +370,119 @@ fun Application.configureRouting() {
                 call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
             }
         }
+
+        get("/enterpriseServices/{enterpriseId}") {
+            val enterpriseId = call.parameters["enterpriseId"]?.toIntOrNull()
+                ?: throw IllegalArgumentException("Invalid enterprise ID")
+
+            val services = transaction {
+                Services.select { Services.idCompany eq enterpriseId }.map {
+                    Service(
+                        id = it[Services.idServices],
+                        serviceName = it[Services.serviceName],
+                        price = it[Services.price].toDouble(),
+                        currency = it[Services.currency],
+                        length = it[Services.length],
+                        breakDuration = it[Services.breakDuration]
+                    )
+                }
+            }
+
+            call.respond(services)
+        }
+
+        post("/addService") {
+            try {
+                val addService = call.receive<ServiceData>()
+                println("Received enterprise registration data: $addService")
+
+                when {
+                    addService.serviceName.length > 100 -> {
+                        call.respond(HttpStatusCode.BadRequest, "Название слишком длинное (макс. 100 символов)")
+                        return@post
+                    }
+                    !addService.serviceName.matches(Regex("^[\\p{L} .'-]+$")) -> {
+                        call.respond(HttpStatusCode.BadRequest, "Недопустимые символы в названии")
+                        return@post
+                    }
+                }
+
+                transaction {
+                    Services.insert {
+                        it[idCompany] = addService.enterpriseId
+                        it[serviceName] = addService.serviceName.trim()
+                        it[price] = addService.price.toBigDecimal()
+                        it[currency] = addService.currency.trim()
+                        it[length] = addService.length
+                        it[breakDuration] = addService.breakDuration
+                    }
+                }
+
+                call.respond(HttpStatusCode.Created)
+            } catch (e: ContentTransformationException) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный формат данных")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+            }
+        }
+
+        get("/services/{serviceId}") {
+            val serviceId = call.parameters["serviceId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = transaction {
+                Services.select { Services.idServices eq serviceId }
+                    .singleOrNull()
+                    ?.let {
+                        ServiceEdit(
+                            serviceName = it[Services.serviceName],
+                            price = it[Services.price].toDouble(),
+                            currency = it[Services.currency],
+                            length = it[Services.length],
+                            breakDuration = it[Services.breakDuration],
+                        )
+                    }
+            } ?: throw NotFoundException("not found")
+
+            call.respond(Data)
+        }
+
+        put("/updateService/{serviceId}") {
+            val serviceId = call.parameters["serviceId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = call.receive<ServiceEdit>()
+
+            transaction {
+                Services.update({ Services.idServices eq serviceId }) {
+                    it[serviceName] = Data.serviceName
+                    it[price] = Data.price.toBigDecimal()
+                    it[currency] = Data.currency
+                    it[length] = Data.length
+                    it[breakDuration] = Data.breakDuration
+                }
+            }
+
+            call.respond(HttpStatusCode.OK)
+        }
+
+        delete("/deleteService/{serviceId}") {
+            val id = call.parameters["serviceId"]?.toIntOrNull()
+
+            if (id == null) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный ID")
+                return@delete
+            }
+
+            try {
+                transaction {
+                    Services.deleteWhere { Services.idServices eq id }
+                }
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+            }
+        }
+
+
     }
 }
