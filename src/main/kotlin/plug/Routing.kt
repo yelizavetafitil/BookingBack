@@ -87,6 +87,19 @@ fun Application.configureRouting() {
                     } get Users.id
                 }
 
+                transaction{
+                    val employee = Employees.select { Employees.employee_phone eq userRegistration.phoneNumber.trim() }.singleOrNull()
+
+
+                    employee?.let {
+                        Projects.insert {
+                            it[access] = employee[Employees.access]
+                            it[id_user] = userId
+                            it[id_company] = employee[Employees.idCompany]
+                        }
+                    }
+                }
+
                 val response = RegistrationResponse(userId)
                 call.respond(HttpStatusCode.Created, response)
             }  catch (e: ContentTransformationException) {
@@ -483,6 +496,144 @@ fun Application.configureRouting() {
             }
         }
 
+        get("/enterpriseEmployee/{enterpriseId}") {
+            val enterpriseId = call.parameters["enterpriseId"]?.toIntOrNull()
+                ?: throw IllegalArgumentException("Invalid enterprise ID")
 
+            val services = transaction {
+                Employees.select { Employees.idCompany eq enterpriseId }.map {
+                    Employee(
+                        id = it[Employees.id],
+                        employee_fio = it[Employees.employee_fio],
+                        employee_phone = it[Employees.employee_phone],
+                        position = it[Employees.position],
+                        access = it[Employees.access]
+                    )
+                }
+            }
+
+            call.respond(services)
+        }
+
+        post("/addEmployee") {
+            try {
+                val addEmployee = call.receive<EmployeeData>()
+                println("Received enterprise registration data: $addEmployee")
+
+                when {
+                    addEmployee.employee_fio.length > 100 -> {
+                        call.respond(HttpStatusCode.BadRequest, "ФИО слишком длинное (макс. 100 символов)")
+                        return@post
+                    }
+                    !addEmployee.employee_fio.matches(Regex("^[\\p{L} .'-]+$")) -> {
+                        call.respond(HttpStatusCode.BadRequest, "Недопустимые символы в ФИО")
+                        return@post
+                    }
+                    addEmployee.position.length > 100 -> {
+                        call.respond(HttpStatusCode.BadRequest, "Должность слишком длинное (макс. 100 символов)")
+                        return@post
+                    }
+                    !addEmployee.position.matches(Regex("^[\\p{L} .'-]+$")) -> {
+                        call.respond(HttpStatusCode.BadRequest, "Недопустимые символы в должности")
+                        return@post
+                    }
+                    addEmployee.employee_phone.isBlank() -> {
+                        call.respond(HttpStatusCode.BadRequest, "Номер телефона обязателен")
+                        return@post
+                    }
+                    addEmployee.access.isBlank() -> {
+                        call.respond(HttpStatusCode.BadRequest, "Доступ обязателен")
+                        return@post
+                    }
+                    !addEmployee.employee_phone.matches(Regex("^\\+?[0-9]{10,15}\$")) -> {
+                        println("Enterprise Phone Number: '${addEmployee.employee_phone}'")
+                        call.respond(HttpStatusCode.BadRequest, "Неверный формат номера телефона")
+                        return@post
+                    }
+                }
+
+                transaction {
+                    Employees.insert {
+                        it[idCompany] = addEmployee.enterpriseId
+                        it[employee_fio] = addEmployee.employee_fio.trim()
+                        it[employee_phone] = addEmployee.employee_phone.trim()
+                        it[position] = addEmployee.position.trim()
+                        it[access] = addEmployee.access.trim()
+                    }
+
+                    val user = Users.select { Users.phoneNumber eq addEmployee.employee_phone.trim() }.singleOrNull()
+
+                    user?.let { existingUser ->
+                        val userId = existingUser[Users.id]
+                        Projects.insert {
+                            it[access] = addEmployee.access.trim()
+                            it[id_user] = userId
+                            it[id_company] = addEmployee.enterpriseId
+                        }
+                    }
+
+                }
+
+                call.respond(HttpStatusCode.Created)
+            } catch (e: ContentTransformationException) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный формат данных")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+            }
+        }
+
+        get("/employees/{employeeId}") {
+            val employeeId = call.parameters["employeeId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = transaction {
+                Employees.select { Employees.id eq employeeId }
+                    .singleOrNull()
+                    ?.let {
+                        EmployeeEdit(
+                            employee_fio = it[Employees.employee_fio],
+                            employee_phone = it[Employees.employee_phone],
+                            position = it[Employees.position],
+                            access = it[Employees.access]
+                        )
+                    }
+            } ?: throw NotFoundException("not found")
+
+            call.respond(Data)
+        }
+
+        put("/updateEmployee/{employeeId}") {
+            val employeeId = call.parameters["employeeId"]?.toIntOrNull()
+                ?: throw BadRequestException("Invalid ID")
+
+            val Data = call.receive<EmployeeEdit>()
+
+            transaction {
+                Employees.update({ Employees.id eq employeeId }) {
+                    it[employee_fio] = Data.employee_fio
+                    it[position] = Data.position
+                    it[access] = Data.access
+                }
+            }
+
+            call.respond(HttpStatusCode.OK)
+        }
+
+        delete("/deleteEmployee/{employeeId}") {
+            val id = call.parameters["employeeId"]?.toIntOrNull()
+
+            if (id == null) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный ID")
+                return@delete
+            }
+
+            try {
+                transaction {
+                    Employees.deleteWhere { Employees.id eq id }
+                }
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+            }
+        }
     }
 }

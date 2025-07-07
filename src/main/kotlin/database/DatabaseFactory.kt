@@ -43,6 +43,17 @@ object Services : Table("services") {
     override val primaryKey = PrimaryKey(idServices)
 }
 
+object Employees : Table("employee") {
+    val id = integer("id_employee").autoIncrement()
+    val idCompany = integer("id_company").references(Companies.idCompany)
+    val employee_fio = varchar("employee_fio", 100)
+    val employee_phone = varchar("employee_phone", 20)
+    val position = varchar("position", 50)
+    val access = varchar("access", 50)
+
+    override val primaryKey = PrimaryKey(id)
+}
+
 fun initDatabase() {
     Database.connect("jdbc:mysql://localhost:3306/booking",
         driver = "com.mysql.cj.jdbc.Driver", user = "pma", password = "your_password")
