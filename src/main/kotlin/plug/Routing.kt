@@ -2,9 +2,7 @@ package com.example.booking.plugins
 
 import com.example.booking.models.*
 import com.example.database.*
-import com.example.models.Service
-import com.example.models.ServiceData
-import com.example.models.ServiceEdit
+import com.example.models.*
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.*
@@ -407,20 +405,34 @@ fun Application.configureRouting() {
         post("/addService") {
             try {
                 val addService = call.receive<ServiceData>()
-                println("Received enterprise registration data: $addService")
+                println("Received service data: $addService")
 
                 when {
                     addService.serviceName.length > 100 -> {
-                        call.respond(HttpStatusCode.BadRequest, "Название слишком длинное (макс. 100 символов)")
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ServiceAddResponse(
+                                serviceId = 0,
+                                success = false,
+                                message = "Название слишком длинное (макс. 100 символов)"
+                            )
+                        )
                         return@post
                     }
                     !addService.serviceName.matches(Regex("^[\\p{L} .'-]+$")) -> {
-                        call.respond(HttpStatusCode.BadRequest, "Недопустимые символы в названии")
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ServiceAddResponse(
+                                serviceId = 0,
+                                success = false,
+                                message = "Недопустимые символы в названии"
+                            )
+                        )
                         return@post
                     }
                 }
 
-                transaction {
+                val insertedId = transaction {
                     Services.insert {
                         it[idCompany] = addService.enterpriseId
                         it[serviceName] = addService.serviceName.trim()
@@ -428,14 +440,36 @@ fun Application.configureRouting() {
                         it[currency] = addService.currency.trim()
                         it[length] = addService.length
                         it[breakDuration] = addService.breakDuration
-                    }
+                    } get Services.idServices
                 }
 
-                call.respond(HttpStatusCode.Created)
+                call.respond(
+                    HttpStatusCode.Created,
+                    ServiceAddResponse(
+                        serviceId = insertedId,
+                        success = true,
+                        message = "Услуга успешно добавлена"
+                    )
+                )
+
             } catch (e: ContentTransformationException) {
-                call.respond(HttpStatusCode.BadRequest, "Неверный формат данных")
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ServiceAddResponse(
+                        serviceId = 0,
+                        success = false,
+                        message = "Неверный формат данных: ${e.message}"
+                    )
+                )
             } catch (e: Exception) {
-                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    ServiceAddResponse(
+                        serviceId = 0,
+                        success = false,
+                        message = "Внутренняя ошибка сервера: ${e.message}"
+                    )
+                )
             }
         }
 
@@ -635,5 +669,77 @@ fun Application.configureRouting() {
                 call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message}")
             }
         }
+
+        post("/service-employees") {
+            try {
+                val assignment = call.receive<ServiceEmployeeAssignment>()
+
+                if (assignment.employee_ids.isEmpty()) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Список сотрудников не может быть пустым")
+                }
+
+                transaction {
+                    assignment.employee_ids.forEach { employeeId ->
+                        EmployeeServices.insert {
+                            it[id_employee] = employeeId
+                            it[id_services] = assignment.service_id
+                        }
+                    }
+                }
+
+                call.respond(HttpStatusCode.OK)
+            } catch (e: ContentTransformationException) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный формат данных: ${e.message}")
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Внутренняя ошибка сервера: ${e.message ?: "неизвестная ошибка"}")
+            }
+        }
+
+        get("/service-employees/{serviceId}") {
+            try {
+                val serviceId = call.parameters["serviceId"]?.toIntOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, "Неверный ID услуги")
+
+                val employees = transaction {
+                    EmployeeServices
+                        .slice(EmployeeServices.id_employee)
+                        .select { EmployeeServices.id_services eq serviceId }
+                        .map { it[EmployeeServices.id_employee] }
+                }
+
+                call.respond(employees)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError,
+                    "Ошибка при получении списка сотрудников: ${e.message}")
+            }
+        }
+
+        put("/service-employees/{serviceId}") {
+            try {
+                val serviceId = call.parameters["serviceId"]?.toIntOrNull()
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, "Неверный ID услуги")
+
+                val employeeIds = call.receive<List<Int>>()
+
+                transaction {
+                    EmployeeServices.deleteWhere {
+                        EmployeeServices.id_services eq serviceId
+                    }
+
+                    employeeIds.forEach { employeeId ->
+                        EmployeeServices.insert {
+                            it[id_employee] = employeeId
+                            it[id_services] = serviceId
+                        }
+                    }
+                }
+
+                call.respond(HttpStatusCode.OK)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError,
+                    "Ошибка при обновлении сотрудников: ${e.message}")
+            }
+        }
+
     }
 }

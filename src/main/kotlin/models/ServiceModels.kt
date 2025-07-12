@@ -31,3 +31,16 @@ data class ServiceEdit(
     val length: Int,
     val breakDuration: Int
 )
+
+@Serializable
+data class ServiceEmployeeAssignment(
+    val service_id: Int,
+    val employee_ids: List<Int>
+)
+
+@Serializable
+data class ServiceAddResponse(
+    val serviceId: Int,
+    val success: Boolean,
+    val message: String? = null
+)
