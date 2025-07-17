@@ -14,6 +14,13 @@ import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
+import java.sql.Date
+import java.sql.Time
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 
 fun Application.configureRouting() {
     routing {
@@ -741,5 +748,423 @@ fun Application.configureRouting() {
             }
         }
 
+        get("/employee/{id}/schedule") {
+            val employeeId = call.parameters["id"]?.toIntOrNull()
+                ?: throw BadRequestException("Неверный ID сотрудника")
+
+            val scheduleType = call.request.queryParameters["type"]
+
+            val response = transaction {
+                EmployeeSchedules
+                    .join(ScheduleTypes, JoinType.INNER, EmployeeSchedules.idScheduleType, ScheduleTypes.id)
+                    .join(WorkTimeSlots, JoinType.LEFT, EmployeeSchedules.idWorkTimeSlot, WorkTimeSlots.id)
+                    .slice(
+                        EmployeeSchedules.id,
+                        EmployeeSchedules.createdAt,
+                        ScheduleTypes.name,
+                        WorkTimeSlots.id,
+                        WorkTimeSlots.startTime,
+                        WorkTimeSlots.endTime,
+                        WorkTimeSlots.validFrom,
+                        WorkTimeSlots.validTo
+                    )
+                    .select { EmployeeSchedules.idEmployee eq employeeId }
+                    .apply {
+                        scheduleType?.let {
+                            andWhere { ScheduleTypes.name eq it }
+                        }
+                    }
+                    .orderBy(EmployeeSchedules.createdAt to SortOrder.DESC)
+                    .groupBy { it[EmployeeSchedules.id] }
+                    .map { (scheduleId, rows) ->
+                        WorkingHoursResponse(
+                            scheduleId = scheduleId,
+                            scheduleType = rows.first()[ScheduleTypes.name],
+                            workTimeSlots = rows.filter { it[WorkTimeSlots.id] != null }
+                                .map { row ->
+                                    val slotId = row[WorkTimeSlots.id]!!
+                                    WorkTimeSlotResponse(
+                                        id = slotId,
+                                        startTime = row[WorkTimeSlots.startTime].toString(),
+                                        endTime = row[WorkTimeSlots.endTime].toString(),
+                                        validFrom = row[WorkTimeSlots.validFrom].toString(),
+                                        validTo = row[WorkTimeSlots.validTo].toString(),
+                                        breaks = WorkBreaks
+                                            .select { WorkBreaks.idWorkTimeSlot eq slotId }
+                                            .map {
+                                                BreakTimeResponse(
+                                                    id = it[WorkBreaks.id],
+                                                    startTime = it[WorkBreaks.breakStartTime].toString(),
+                                                    endTime = it[WorkBreaks.breakEndTime].toString()
+                                                )
+                                            }
+                                    )
+                                }
+                        )
+                    }
+            }
+
+            call.respond(response)
+        }
+
+        post("/employee/schedule") {
+            val request = call.receive<WorkingHoursRequest>()
+
+            if (request.employeeId <= 0) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный ID сотрудника")
+                return@post
+            }
+            if (request.scheduleType.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, "Тип графика обязателен для заполнения")
+                return@post
+            }
+            if (request.workTimeSlots.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, "Необходимо указать хотя бы один рабочий временной интервал")
+                return@post
+            }
+
+            val result = transaction {
+                val employee = Employees.select { Employees.id eq request.employeeId }.singleOrNull()
+                    ?: return@transaction HttpStatusCode.NotFound to "Сотрудник не найден"
+
+                val scheduleTypeId = ScheduleTypes.select {
+                    ScheduleTypes.name eq request.scheduleType
+                }.singleOrNull()?.get(ScheduleTypes.id)
+                    ?: return@transaction HttpStatusCode.BadRequest to "Указан неверный тип графика"
+
+                request.workTimeSlots.forEach { slot ->
+                    val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+                    val startTime = try {
+                        LocalTime.parse(slot.startTime, timeFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат времени начала работы (ожидается HH:mm)"
+                    }
+
+                    val endTime = try {
+                        LocalTime.parse(slot.endTime, timeFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат времени окончания работы (ожидается HH:mm)"
+                    }
+
+                    val dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yy")
+                    val validFrom = try {
+                        LocalDate.parse(slot.validFrom, dateFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат даты начала периода (ожидается dd.MM.yy)"
+                    }
+
+                    val validTo = try {
+                        LocalDate.parse(slot.validTo, dateFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат даты окончания периода (ожидается dd.MM.yy)"
+                    }
+
+                    if (startTime >= endTime) {
+                        return@transaction HttpStatusCode.BadRequest to "Время окончания работы должно быть позже времени начала"
+                    }
+
+                    if (validFrom > validTo) {
+                        return@transaction HttpStatusCode.BadRequest to "Дата окончания периода должна быть позже даты начала"
+                    }
+
+                    val timeSlotId = WorkTimeSlots.insert {
+                        it[WorkTimeSlots.startTime] = startTime
+                        it[WorkTimeSlots.endTime] = endTime
+                        it[WorkTimeSlots.validFrom] = validFrom
+                        it[WorkTimeSlots.validTo] = validTo
+                    } get WorkTimeSlots.id
+
+                    slot.breaks.forEach { breakTime ->
+                        val breakStart = try {
+                            LocalTime.parse(breakTime.startTime)
+                        } catch (e: Exception) {
+                            return@transaction HttpStatusCode.BadRequest to "Неверный формат времени начала перерыва (ожидается HH:mm)"
+                        }
+
+                        val breakEnd = try {
+                            LocalTime.parse(breakTime.endTime)
+                        } catch (e: Exception) {
+                            return@transaction HttpStatusCode.BadRequest to "Неверный формат времени окончания перерыва (ожидается HH:mm)"
+                        }
+
+                        if (breakStart >= breakEnd) {
+                            return@transaction HttpStatusCode.BadRequest to "Время окончания перерыва должно быть позже времени начала"
+                        }
+
+                        if (breakStart < startTime || breakEnd > endTime) {
+                            return@transaction HttpStatusCode.BadRequest to "Перерыв должен быть в пределах рабочего времени"
+                        }
+
+                        WorkBreaks.insert {
+                            it[idWorkTimeSlot] = timeSlotId
+                            it[breakStartTime] = breakStart
+                            it[breakEndTime] = breakEnd
+                        }
+                    }
+
+                    EmployeeSchedules.insert {
+                        it[idEmployee] = request.employeeId
+                        it[idScheduleType] = scheduleTypeId
+                        it[idWorkTimeSlot] = timeSlotId
+                        it[createdAt] = LocalDateTime.now()
+                    }
+                }
+
+                HttpStatusCode.OK to "Рабочий график успешно сохранен"
+            }
+
+            call.respond(result.first, result.second)
+        }
+
+        post("/employee/week-schedule") {
+            val request = call.receive<WorkingWeeksHoursRequest>()
+
+            if (request.employeeId <= 0) {
+                call.respond(HttpStatusCode.BadRequest, "Неверный ID сотрудника")
+                return@post
+            }
+            if (request.scheduleType.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, "Тип графика обязателен для заполнения")
+                return@post
+            }
+            if (request.dayOfWeek.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, "Дни недели обязательны для заполнения")
+                return@post
+            }
+            if (request.workTimeSlots.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, "Необходимо указать рабочие временные интервалы")
+                return@post
+            }
+
+            fun parseDayOfWeek(day: String): Int {
+                return when (day.trim().lowercase()) {
+                    "понедельник", "1" -> 1
+                    "вторник", "2" -> 2
+                    "среда", "3" -> 3
+                    "четверг", "4" -> 4
+                    "пятница", "5" -> 5
+                    "суббота", "6" -> 6
+                    "воскресенье", "7" -> 7
+                    else -> throw IllegalArgumentException("Неверный день: $day")
+                }
+            }
+
+            val result = transaction {
+
+                val employee = Employees.select { Employees.id eq request.employeeId }.singleOrNull()
+                    ?: return@transaction HttpStatusCode.NotFound to "Сотрудник не найден"
+
+                val scheduleTypeId = ScheduleTypes.select {
+                    ScheduleTypes.name eq request.scheduleType
+                }.singleOrNull()?.get(ScheduleTypes.id)
+
+
+                val scheduleSubTypeId = if (request.scheduleSubType.isNotBlank()) {
+                    ScheduleSubtypes.select {
+                        ScheduleSubtypes.name eq request.scheduleSubType
+                    }.singleOrNull()?.get(ScheduleSubtypes.id)
+                } else null
+
+                val daysOfWeek = try {
+                    request.dayOfWeek.split(",").map { day -> parseDayOfWeek(day) }
+                } catch (e: Exception) {
+                    return@transaction HttpStatusCode.BadRequest to "Ошибка в формате дней недели: ${e.message}"
+                }
+                // Обработка каждого временного слота
+                request.workTimeSlots.forEach { slot ->
+                    // Парсинг времени
+                    val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+                    val startTime = try {
+                        LocalTime.parse(slot.startTime, timeFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат времени начала работы (ожидается HH:mm)"
+                    }
+
+                    val endTime = try {
+                        LocalTime.parse(slot.endTime, timeFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат времени окончания работы (ожидается HH:mm)"
+                    }
+
+                    // Парсинг дат
+                    val dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yy")
+                    val validFrom = try {
+                        LocalDate.parse(slot.validFrom, dateFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат даты начала периода (ожидается dd.MM.yy)"
+                    }
+
+                    val validTo = try {
+                        LocalDate.parse(slot.validTo, dateFormatter)
+                    } catch (e: Exception) {
+                        return@transaction HttpStatusCode.BadRequest to "Неверный формат даты окончания периода (ожидается dd.MM.yy)"
+                    }
+
+                    // Валидация
+                    if (startTime >= endTime) {
+                        return@transaction HttpStatusCode.BadRequest to "Время окончания работы должно быть позже времени начала"
+                    }
+
+                    if (validFrom > validTo) {
+                        return@transaction HttpStatusCode.BadRequest to "Дата окончания периода должна быть позже даты начала"
+                    }
+
+                    val timeSlotId = WorkTimeSlots.insert {
+                        it[WorkTimeSlots.startTime] = startTime
+                        it[WorkTimeSlots.endTime] = endTime
+                        it[WorkTimeSlots.validFrom] = validFrom
+                        it[WorkTimeSlots.validTo] = validTo
+                    } get WorkTimeSlots.id
+
+                    slot.breaks.forEach { breakTime ->
+                        val breakStart = try {
+                            LocalTime.parse(breakTime.startTime, timeFormatter)
+                        } catch (e: Exception) {
+                            return@transaction HttpStatusCode.BadRequest to "Неверный формат времени начала перерыва (ожидается HH:mm)"
+                        }
+
+                        val breakEnd = try {
+                            LocalTime.parse(breakTime.endTime, timeFormatter)
+                        } catch (e: Exception) {
+                            return@transaction HttpStatusCode.BadRequest to "Неверный формат времени окончания перерыва (ожидается HH:mm)"
+                        }
+
+                        if (breakStart >= breakEnd) {
+                            return@transaction HttpStatusCode.BadRequest to "Время окончания перерыва должно быть позже времени начала"
+                        }
+
+                        if (breakStart < startTime || breakEnd > endTime) {
+                            return@transaction HttpStatusCode.BadRequest to "Перерыв должен быть в пределах рабочего времени"
+                        }
+
+                        WorkBreaks.insert {
+                            it[idWorkTimeSlot] = timeSlotId
+                            it[breakStartTime] = breakStart
+                            it[breakEndTime] = breakEnd
+                        }
+                    }
+
+                    daysOfWeek.forEach { dayNumber ->
+                        // Получение или создание записи дня недели
+                        val weekDayId = ScheduleWeekDays.select {
+                            ScheduleWeekDays.dayOfWeek eq dayNumber
+                        }.singleOrNull()?.get(ScheduleWeekDays.id)
+                            ?: ScheduleWeekDays.insert {
+                                it[dayOfWeek] = dayNumber
+                                it[isWorking] = true
+                            } get ScheduleWeekDays.id
+
+                        // Создание записи графика сотрудника
+                        EmployeeSchedules.insert {
+                            it[idEmployee] = request.employeeId
+                            it[idScheduleType] = scheduleTypeId
+                            it[idScheduleSubtype] = scheduleSubTypeId
+                            it[idScheduleWeekDay] = weekDayId
+                            it[idWorkTimeSlot] = timeSlotId
+                            it[createdAt] = LocalDateTime.now()
+                        }
+                    }
+                }
+
+                HttpStatusCode.OK to "График работы по дням недели успешно сохранен"
+            }
+
+            call.respond(result.first, result.second)
+        }
+
+
+        get("/employee/{id}/week-schedule") {
+            val employeeId = call.parameters["id"]?.toIntOrNull()
+                ?: throw BadRequestException("Неверный ID сотрудника")
+
+            // Получаем параметры запроса
+            val scheduleType = call.request.queryParameters["type"]
+            val dayName = call.request.queryParameters["days"]
+            val scheduleSubType = call.request.queryParameters["subType"]
+
+            // Преобразуем название дня в число
+            val dayOfWeekNumber = dayName?.let { name ->
+                when (name) {
+                    "Понедельник" -> 1
+                    "Вторник" -> 2
+                    "Среда" -> 3
+                    "Четверг" -> 4
+                    "Пятница" -> 5
+                    "Суббота" -> 6
+                    "Воскресенье" -> 7
+                    else -> null
+                }
+            }
+
+            // Функция для преобразования числа дня недели в строку
+            fun getDayOfWeekName(dayNumber: Int?): String {
+                return when (dayNumber) {
+                    1 -> "Понедельник"
+                    2 -> "Вторник"
+                    3 -> "Среда"
+                    4 -> "Четверг"
+                    5 -> "Пятница"
+                    6 -> "Суббота"
+                    7 -> "Воскресенье"
+                    else -> "Неизвестный день"
+                }
+            }
+
+            val response = transaction {
+                EmployeeSchedules
+                    .join(ScheduleTypes, JoinType.INNER, EmployeeSchedules.idScheduleType, ScheduleTypes.id)
+                    .join(ScheduleSubtypes, JoinType.LEFT, EmployeeSchedules.idScheduleSubtype, ScheduleSubtypes.id)
+                    .join(ScheduleWeekDays, JoinType.LEFT, EmployeeSchedules.idScheduleWeekDay, ScheduleWeekDays.id)
+                    .join(WorkTimeSlots, JoinType.LEFT, EmployeeSchedules.idWorkTimeSlot, WorkTimeSlots.id)
+                    .slice(
+                        EmployeeSchedules.id,
+                        ScheduleTypes.name,
+                        ScheduleSubtypes.name,
+                        ScheduleWeekDays.dayOfWeek,
+                        WorkTimeSlots.id,
+                        WorkTimeSlots.startTime,
+                        WorkTimeSlots.endTime,
+                        WorkTimeSlots.validFrom,
+                        WorkTimeSlots.validTo
+                    )
+                    .select {
+                        EmployeeSchedules.idEmployee eq employeeId and
+                                (scheduleType?.let { ScheduleTypes.name eq it } ?: Op.TRUE) and
+                                (dayOfWeekNumber?.let { ScheduleWeekDays.dayOfWeek eq it } ?: Op.TRUE) and
+                                (scheduleSubType?.let { ScheduleSubtypes.name eq it } ?: Op.TRUE)
+                    }
+                    .orderBy(EmployeeSchedules.createdAt to SortOrder.DESC)
+                    .groupBy { Triple(it[ScheduleWeekDays.dayOfWeek], it[ScheduleTypes.name], it[ScheduleSubtypes.name]) }
+                    .map { (key, rows) ->
+                        val (dayOfWeek, scheduleType, scheduleSubType) = key
+                        WeekDayScheduleResponse(
+                            dayOfWeek = getDayOfWeekName(dayOfWeek),
+                            scheduleType = scheduleType,
+                            scheduleSubType = scheduleSubType ?: "",
+                            workTimeSlots = rows.filter { it[WorkTimeSlots.id] != null }
+                                .map { row ->
+                                    val slotId = row[WorkTimeSlots.id]!!
+                                    WorkTimeSlotResponse(
+                                        id = slotId,
+                                        startTime = row[WorkTimeSlots.startTime].toString(),
+                                        endTime = row[WorkTimeSlots.endTime].toString(),
+                                        validFrom = row[WorkTimeSlots.validFrom].toString(),
+                                        validTo = row[WorkTimeSlots.validTo].toString(),
+                                        breaks = WorkBreaks
+                                            .select { WorkBreaks.idWorkTimeSlot eq slotId }
+                                            .map {
+                                                BreakTimeResponse(
+                                                    id = it[WorkBreaks.id],
+                                                    startTime = it[WorkBreaks.breakStartTime].toString(),
+                                                    endTime = it[WorkBreaks.breakEndTime].toString()
+                                                )
+                                            }
+                                    )
+                                }
+                        )
+                    }
+            }
+            call.respond(response)
+        }
     }
 }
