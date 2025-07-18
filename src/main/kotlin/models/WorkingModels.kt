@@ -52,7 +52,7 @@ data class BreakTimeResponse(
 data class WorkingWeeksHoursRequest(
     val employeeId: Int,
     val scheduleType: String,
-    val dayOfWeek: String, // например: "1,2,3,4,5" для рабочих дней
+    val dayOfWeek: String,
     val scheduleSubType: String,
     val workTimeSlots: List<WorkTimeSlotRequest>
 )
@@ -64,17 +64,20 @@ data class WeekDayScheduleResponse(
     val workTimeSlots: List<WorkTimeSlotResponse>
 )
 @Serializable
-data class WorkTime(
-    val start: String, // формат HH:mm
-    val end: String   // формат HH:mm
+data class ChoiceDayScheduleResponse(
+    val dayWork: String,
+    val dayRest: String,
+    val scheduleType: String,
+    val scheduleSubType: String,
+    val workTimeSlots: List<WorkTimeSlotResponse>
 )
 @Serializable
-data class WorkPeriod(
-    val start: String, // формат dd.MM.yy
-    val end: String   // формат dd.MM.yy
+data class WorkingChoiceHoursRequest(
+    val employeeId: Int,
+    val scheduleType: String,
+    val dayWork: String,
+    val dayRest: String,
+    val scheduleSubType: String,
+    val workTimeSlots: List<WorkTimeSlotRequest>
 )
-@Serializable
-data class BreakTime(
-    val start: String, // формат HH:mm
-    val end: String   // формат HH:mm
-)
+

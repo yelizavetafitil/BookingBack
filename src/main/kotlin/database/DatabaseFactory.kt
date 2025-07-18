@@ -78,7 +78,6 @@ object ScheduleSubtypes : Table("schedule_subtypes") {
 
 object SchedulePatterns : Table("schedule_patterns") {
     val id = integer("id_schedule_patterns").autoIncrement()
-    val name = varchar("schedule_patterns_name", 50)
     val daysWork = integer("days_work")
     val daysRest = integer("days_rest")
 
